@@ -1,0 +1,94 @@
+name: CI/CD
+
+# Setiap push dan pull request dicek dulu. Kalau lolos:
+# - push ke main            -> deploy produksi ke Vercel
+# - push ke branch lain / PR -> deploy preview ke Vercel
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+jobs:
+  check:
+    name: Cek kode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Sintaks JS, JSON, dan referensi file
+        run: node scripts/check.mjs
+
+  preview:
+    name: Deploy preview
+    needs: check
+    if: github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lewati bila secret Vercel belum diisi
+        if: env.VERCEL_TOKEN == ''
+        run: echo "::notice::Secret VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID belum diisi. Deploy dilewati."
+      - name: Install Vercel CLI
+        if: env.VERCEL_TOKEN != ''
+        run: npm install --global vercel@latest
+      - name: Ambil pengaturan proyek
+        if: env.VERCEL_TOKEN != ''
+        run: vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+      - name: Build
+        if: env.VERCEL_TOKEN != ''
+        run: vercel build --token="$VERCEL_TOKEN"
+      - name: Deploy
+        id: deploy
+        if: env.VERCEL_TOKEN != ''
+        run: |
+          url=$(vercel deploy --prebuilt --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Preview siap: $url" >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    name: Deploy produksi
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lewati bila secret Vercel belum diisi
+        if: env.VERCEL_TOKEN == ''
+        run: echo "::notice::Secret VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID belum diisi. Deploy dilewati."
+      - name: Install Vercel CLI
+        if: env.VERCEL_TOKEN != ''
+        run: npm install --global vercel@latest
+      - name: Ambil pengaturan proyek
+        if: env.VERCEL_TOKEN != ''
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Build
+        if: env.VERCEL_TOKEN != ''
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+      - name: Deploy
+        id: deploy
+        if: env.VERCEL_TOKEN != ''
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Produksi diperbarui: $url" >> "$GITHUB_STEP_SUMMARY"
